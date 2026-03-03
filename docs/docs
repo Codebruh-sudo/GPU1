@@ -1,0 +1,214 @@
+# Physics — 2D Heat Equation
+
+## Governing Equation
+
+The heat (diffusion) equation describes how temperature `u(x,y,t)` evolves
+in a conducting medium with thermal diffusivity `α`:
+
+```
+∂u/∂t = α ∇²u = α ( ∂²u/∂x² + ∂²u/∂y² )
+```
+
+On a bounded domain `Ω = [0,1] × [0,1]` with:
+
+- **Initial condition**: Gaussian pulse centred at (0.5, 0.5)
+  ```
+  u(x,y,0) = exp( -((x-0.5)² + (y-0.5)²) / σ² )
+  ```
+- **Boundary condition**: Dirichlet, `u = 0` on all four edges
+
+---
+
+## FTCS Discretisation
+
+Using a uniform grid with spacing `Δx = Δy = 1/N` and time step `Δt`:
+
+```
+u_new[i,j] = u[i,j]
+           + rx * ( u[i][j-1] - 2·u[i][j] + u[i][j+1] )
+           + ry * ( u[i-1][j] - 2·u[i][j] + u[i+1][j] )
+```
+
+Where the **mesh Fourier numbers** are:
+
+```
+rx = α·Δt / Δx²
+ry = α·Δt / Δy²
+```
+
+---
+
+## Von Neumann Stability Analysis
+
+FTCS is **conditionally stable**. Substituting a Fourier mode
+`u[i,j]^n = g^n · exp(i·k_x·j·Δx) · exp(i·k_y·i·Δy)` into the scheme
+and requiring `|g| ≤ 1` gives:
+
+```
+rx + ry ≤ 0.5
+```
+
+For uniform spacing `Δx = Δy` and isotropic `α`:
+
+```
+r = α·Δt/Δx² ≤ 0.25   (2D stability limit)
+```
+
+Our solver uses `α = 0.01`, `Δt = 0.0001`, `Δx = 1/N`:
+
+| Grid | r | Stable? |
+|------|---|---------|
+| 128² | 0.0164 | ✓ |
+| 256² | 0.0066 | ✓ |
+| 512² | 0.0026 | ✓ |
+| 1024²| 0.0010 | ✓ |
+
+---
+
+## Analytical Solution (Infinite Domain)
+
+For the Gaussian initial condition on an infinite domain the exact solution is:
+
+```
+u(x,y,t) = σ²/(σ² + 4αt) · exp( -r² / (σ² + 4αt) )
+```
+
+The pulse spreads with effective variance `σ²(t) = σ² + 4αt` and its
+peak amplitude decays as `1/(1 + 4αt/σ²)`. Our numerical solution
+reproduces this behaviour until the pulse reaches the boundaries.
+
+  II )
+
+  # Kernel Optimization Notes
+
+## Why GPU suits this problem
+
+The FTCS stencil is **embarrassingly parallel** — every interior cell
+updates independently using only its 4 neighbours. With a 1024² grid
+there are ~1M independent computations per time step, which maps
+perfectly onto the T4's 2560 CUDA cores.
+
+---
+
+## Arithmetic Intensity and the Roofline Model
+
+For the 5-point stencil:
+
+```
+FLOPs per cell    = 8  (4 adds, 4 multiplies)
+Bytes per cell    = 24 (5 reads × 4B + 1 write × 4B)
+AI                = 8 / 24 = 0.33 FLOP/byte
+```
+
+The T4 ridge point (achieved BW / achieved FLOP/s) sits around
+`~1.0 FLOP/byte`. Since our AI = 0.33 is well below this, the kernel
+is **memory-bound** — optimising memory access patterns gives the
+biggest return.
+
+---
+
+## Stage 1 — Naive (Global Memory)
+
+Each thread independently reads 5 floats from DRAM:
+
+```
+center = u[i  *nx + j  ]
+left   = u[i  *nx + j-1]
+right  = u[i  *nx + j+1]
+up     = u[(i-1)*nx + j]
+down   = u[(i+1)*nx + j]
+```
+
+**Problem**: Adjacent threads load overlapping data.
+Thread (i,j) and thread (i,j+1) both load `u[i*nx+j]` — that value
+is fetched from DRAM twice instead of once.
+
+Across a 16×16 block, each interior cell is loaded ~5 times redundantly.
+
+---
+
+## Stage 2 — Shared Memory Tiling
+
+Each block cooperatively loads a `(TILE+2) × (TILE+2)` tile into
+`__shared__` memory before computing:
+
+```
+__shared__ float s[SMEM][SMEM];   // SMEM = TILE + 2
+
+// Every thread loads its own cell
+s[li][lj] = u[gi*nx + gj];
+
+// Edge threads load halo cells
+if (threadIdx.y == 0)         s[0][lj]      = u[(gi-1)*nx + gj];
+if (threadIdx.y == TILE-1)    s[SMEM-1][lj] = u[(gi+1)*nx + gj];
+if (threadIdx.x == 0)         s[li][0]      = u[gi*nx + gj-1];
+if (threadIdx.x == TILE-1)    s[li][SMEM-1] = u[gi*nx + gj+1];
+
+__syncthreads();   // barrier: all loads done before any reads
+```
+
+**Result**: Each global memory location is loaded exactly once per block.
+Stencil reads are served from 48KB on-chip shared memory at ~100× lower
+latency than DRAM.
+
+**Shared memory per block**: 18×18×4 = 1296 bytes (well within 48KB limit).
+
+---
+
+## Stage 3 — float4 Vectorised Loads
+
+The T4 memory controller issues 128-bit transactions natively.
+A `float4` load costs the same as a scalar `float` load but moves
+4× the data in one instruction:
+
+```cpp
+// One 128-bit instruction loads 4 floats
+float4 row = reinterpret_cast<const float4*>(u)[i*(nx/4) + j4/4];
+```
+
+Each thread processes 4 consecutive columns, eliminating per-element
+load overhead. Requirement: `nx` must be a multiple of 4.
+
+**Why this helps**: Reduces the total number of memory instructions,
+freeing the load/store units and improving instruction-level parallelism.
+
+---
+
+## Stage 4 — Occupancy Tuning with `__launch_bounds__`
+
+**Occupancy** = fraction of maximum warps that are active on an SM simultaneously.
+Higher occupancy → more warps to hide memory latency.
+
+`__launch_bounds__(maxTPB, minBPSM)` tells `nvcc`:
+- Never launch more than `maxTPB` threads per block
+- Try to fit at least `minBPSM` blocks per SM
+
+The compiler uses this to budget register allocation:
+
+```
+T4 (SM 7.5):  65536 registers / SM
+256 threads × 4 blocks = 1024 threads/SM
+Max registers/thread = 65536 / 1024 = 64
+```
+
+Without the hint, `nvcc` may allocate >64 registers per thread,
+reducing blocks/SM from 4 to 2 or 1 — cutting occupancy in half.
+
+```cpp
+__global__
+__launch_bounds__(256, 4)   // max 256 threads/block, target 4 blocks/SM
+void diffuse_occupancy(...) { ... }
+```
+
+---
+
+## Summary
+
+| Optimization | Targets | Mechanism |
+|-------------|---------|-----------|
+| Shared memory | Redundant DRAM reads | On-chip tile reuse |
+| float4 loads | Memory instruction count | 128-bit transactions |
+| `__launch_bounds__` | SM occupancy | Register budget hint |
+
+The combined effect gives a measured speedup of X× over naive at
+1024² grid size — see `benchmarks/optimization_stages.csv` for exact numbers.
