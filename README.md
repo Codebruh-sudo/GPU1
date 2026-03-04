@@ -33,7 +33,7 @@ In plain English: *the rate of temperature change at any point equals how
 different that point's temperature is from its neighbours, scaled by the
 material's thermal diffusivity α.*
 
-We solve this numerically using the **FTCS scheme** — at each time step, every
+We solve this numerically using the **FTCS scheme**  at each time step, every
 grid cell looks at its 4 neighbours (left, right, up, down) and updates its
 temperature based on the difference. This is called a 5-point stencil.
 
@@ -59,7 +59,7 @@ u_new[i,j] = u[i,j]
 
 ## Why this is a good GPU problem
 
-Every single cell on the grid updates independently — it only needs its 4
+Every single cell on the grid updates independently it only needs its 4
 neighbours, not any global information. This means we can compute all ~1 million
 cells simultaneously across the GPU's thousands of CUDA cores. This is called
 **embarrassingly parallel** and it is exactly the kind of workload GPUs are
@@ -216,7 +216,7 @@ gpu-diffusion-solver/
 ├── README.md
 │
 ├── kernels/
-│   └── diffusion_kernels.cu    ← all 4 CUDA kernels, pure C++
+│   └── diffusion_kernels.cu    ← all 4 CUDA kernels,  C++
 │
 ├── src/
 │   └── diffusion_solver.py     ← Python: timing, benchmarking, plotting
