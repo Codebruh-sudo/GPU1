@@ -239,8 +239,6 @@ The two main files are deliberately separate:
 - `diffusion_solver.py` is **how it is orchestrated from the CPU** — memory
   allocation, timing, CSV output, visualisation.
 
----
-
 ## How to Run It
 
 ### Option A — Google Colab (recommended, free T4 GPU)
@@ -259,8 +257,6 @@ pip install pycuda matplotlib numpy
 python src/diffusion_solver.py
 ```
 
----
-
 ## CUDA Concepts Demonstrated
 
 | Concept | Where used |
@@ -275,8 +271,6 @@ python src/diffusion_solver.py
 | Ping-pong buffering | Solver — two device buffers, swap each step |
 | CUDA event timing | Accurate kernel timing, no profiler needed |
 | Roofline model | Bandwidth vs compute analysis |
-
----
 
 ## Hardware
 
