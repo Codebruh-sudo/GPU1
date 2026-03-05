@@ -90,23 +90,22 @@ Before computing anything, each block of 16×16 threads cooperatively loads
 their data — plus a 1-cell border (called a "halo") around the edges — into a
 tiny ultra-fast on-chip memory called **shared memory**.
 
-```
 All threads → DRAM once → shared memory → compute (fast, efficient)
-```
 
 Shared memory sits physically on the chip next to the CUDA cores. It is roughly
 100× faster to access than DRAM. Once the tile is loaded, all 5 stencil reads
 per thread are served from shared memory — no redundant DRAM traffic.
 
-```
-┌─────────────────────────┐
-│  halo (top row)         │
-│  halo │  16×16  │ halo  │
-│       │  tile   │       │
-│  halo (bottom row)      │
-└─────────────────────────┘
-```
-
+┌────────────────────────────┐
+│  TL │  top halo      │ TR  │
+│─────┼────────────────┼─────│
+│     │                │     │
+│left │   16×16 tile   │right│
+│halo │                │halo │
+│     │                │     │
+│─────┼────────────────┼─────│
+│  BL │  bottom halo   │ BR  │
+└────────────────────────────┘
 ### Stage 3 — float4 Vectorised Loads
 
 The T4's memory controller moves data in 128-bit chunks natively. A normal
@@ -115,11 +114,9 @@ in the exact same number of memory instructions.
 
 We restructure each thread to process 4 consecutive grid cells instead of 1,
 using a single `float4` load to fetch all 4 values in one transaction.
-
-```cpp
+cpp
 // One instruction, 4 floats loaded
-float4 row = reinterpret_cast<const float4*>(u)[i*(nx/4) + j4/4];
-```
+float4 row = reinterpret_cast<const float4*>(u)[i*(nx/4) + j4/4]
 
 ### Stage 4 — Occupancy Tuning
 
@@ -132,13 +129,10 @@ many registers, fewer blocks fit on each SM simultaneously. We use
 `__launch_bounds__(256, 4)` to give the compiler a budget: fit at least 4 blocks
 per SM, which means no more than 64 registers per thread.
 
-```cpp
+cpp
 __global__
 __launch_bounds__(256, 4)   // max 256 threads/block, target 4 blocks/SM
 void diffuse_occupancy(...) { ... }
-```
-
----
 
 ## Performance Results
 
@@ -210,18 +204,20 @@ gpu-diffusion-solver/
 ├── README.md
 │
 ├── kernels/
-│   └── diffusion_kernels.cu    ← all 4 CUDA kernels,  C++
+│   └── diffusion_kernels.cu         ← all 4 CUDA kernels,  C++
 │
 ├── src/
-│   └── diffusion_solver.py     ← Python: timing, benchmarking, plotting
+│   └── diffusion_solver.py          ← Python: timing, benchmarking, plotting
 │
 ├── notebooks/
-│   └── run_on_colab.ipynb      ← click to run on free T4 GPU
+│   └── run_on_colab.ipynb           ← click to run on free T4 GPU
 │
-├── image/
-│                                ←  contains snapshots
-│   
-│
+├── images
+│   |____ diffusion_snapshots.png     ←  contains snapshots
+│   |___ benchmark
+│        |___optimization stages.csv.png
+|        | __performance.png
+|
 ├── benchmarks/                 ← auto-generated when you run
 │   ├── optimization_stages.csv
 │   ├── performance.png
