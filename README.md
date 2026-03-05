@@ -96,16 +96,15 @@ Shared memory sits physically on the chip next to the CUDA cores. It is roughly
 100× faster to access than DRAM. Once the tile is loaded, all 5 stencil reads
 per thread are served from shared memory — no redundant DRAM traffic.
 
-┌────────────────────────────┐
-│  TL │  top halo      │ TR  │
-│─────┼────────────────┼─────│
-│     │                │     │
-│left │   16×16 tile   │right│
-│halo │                │halo │
-│     │                │     │
-│─────┼────────────────┼─────│
-│  BL │  bottom halo   │ BR  │
-└────────────────────────────┘
+______________________________
+│  * │   top halo (18)  │ *  │
+│────┼──────────────────┼────│
+│  L │   16×16 tile     │ R  │     
+│────┼──────────────────┼────│
+│  * │ bottom halo (18) │ *  │
+|____|__________________ |___|
+* = corner cells (loaded but unused in 5-point stencil)
+Shared memory allocated: 18×18 = 324 floats per block
 ### Stage 3 — float4 Vectorised Loads
 
 The T4's memory controller moves data in 128-bit chunks natively. A normal
