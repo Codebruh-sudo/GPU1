@@ -37,14 +37,14 @@ We solve this numerically using the **FTCS scheme**  at each time step, every
 grid cell looks at its 4 neighbours (left, right, up, down) and updates its
 temperature based on the difference. This is called a 5-point stencil.
 
-
+'''
          up
           |
 left — centre — right
           |
          down
 
-
+'''
 The update formula for each cell:
 
 
